@@ -90,7 +90,8 @@ blocks:
                 if curl -fsS http://127.0.0.1:4000/ > /dev/null; then
                   break
                 fi
-                if [ "$attempt" -eq 20 ]; then
+                if [[ "$attempt" -eq 20 ]]; then
+                  echo "App did not become ready on http://127.0.0.1:4000/"
                   exit 1
                 fi
                 sleep 1
