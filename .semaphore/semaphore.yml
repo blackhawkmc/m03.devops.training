@@ -84,7 +84,7 @@ blocks:
             - python -m pip install --upgrade pip
             - pip install -r 5-dast/requirements.txt
             - pip install wapiti3 gunicorn
-            - gunicorn -b 0.0.0.0:4000 5-dast/app:app --daemon
+            - (cd 5-dast && gunicorn -b 0.0.0.0:4000 app:app > /tmp/gunicorn.log 2>&1 &)
             - |
               for attempt in $(seq 1 300); do
                 if curl -fsS http://127.0.0.1:4000/ > /dev/null; then
@@ -92,6 +92,8 @@ blocks:
                 fi
                 if [[ "$attempt" -eq 300 ]]; then
                   echo "App still not ready after 5 minutes; continuing anyway."
+                  echo "Gunicorn log tail:"
+                  tail -n 100 /tmp/gunicorn.log || true
                 fi
                 sleep 1
               done
