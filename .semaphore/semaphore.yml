@@ -1,10 +1,16 @@
 version: v1.0
-name: Code Signing Pipeline
+name: Shift-Left Security Pipeline
 
 agent:
   machine:
     type: f1-standard-4
     os_image: ubuntu2404
+
+global_job_config:
+  prologue:
+    commands:
+      - sem-version python 3.12.1
+      - checkout
 
 blocks:
   - name: Sign
@@ -15,21 +21,91 @@ blocks:
       jobs:
         - name: Sign artifact
           commands:
-            - checkout
+            - test -f artifact.txt
             - gpg --import /home/semaphore/public.key
             - gpg --import /home/semaphore/private.key
             - gpg --output artifact.txt.sig --detach-sign artifact.txt
             - artifact push workflow artifact.txt.sig
 
   - name: Verify
-    dependencies: [Sign]
+    dependencies:
+      - Sign
     task:
       secrets:
         - name: DOCKER_FILIP
       jobs:
         - name: Verify signature
           commands:
-            - checkout
             - gpg --import /home/semaphore/public.key
             - artifact pull workflow artifact.txt.sig
             - gpg --verify artifact.txt.sig artifact.txt
+
+  - name: Generate SBOM
+    dependencies:
+      - Verify
+    task:
+      jobs:
+        - name: CycloneDX
+          commands:
+            - python -m pip install --upgrade pip
+            - pip install cyclonedx-bom
+            - (cd 2-sbom && cyclonedx-py requirements -o bom.json)
+            - artifact push workflow 2-sbom/bom.json
+
+  - name: Dependency Scan
+    dependencies:
+      - Verify
+    task:
+      jobs:
+        - name: pip-audit
+          commands:
+            - python -m pip install --upgrade pip
+            - pip install pip-audit
+            - (cd 3-dependency-scanning && pip-audit -r requirements.txt || true)
+
+  - name: SAST
+    dependencies:
+      - Verify
+    task:
+      jobs:
+        - name: Bandit
+          commands:
+            - python -m pip install --upgrade pip
+            - pip install bandit
+            - bandit -r 4-sast/vulnerable_script.py || true
+
+  - name: DAST
+    dependencies:
+      - Verify
+    task:
+      jobs:
+        - name: Wapiti
+          commands:
+            - python -m pip install --upgrade pip
+            - pip install -r 5-dast/requirements.txt
+            - pip install wapiti3 gunicorn
+            - gunicorn -b 0.0.0.0:4000 5-dast/app:app --daemon
+            - |
+              for attempt in $(seq 1 20); do
+                if curl -fsS http://127.0.0.1:4000/ > /dev/null; then
+                  break
+                fi
+                if [ "$attempt" -eq 20 ]; then
+                  exit 1
+                fi
+                sleep 1
+              done
+            - wapiti -u http://127.0.0.1:4000 -f html || true
+            - artifact push workflow ~/.wapiti/generated_report
+
+  - name: Pipeline Complete
+    dependencies:
+      - Generate SBOM
+      - Dependency Scan
+      - SAST
+      - DAST
+    task:
+      jobs:
+        - name: Summary
+          commands:
+            - echo "All shift-left security stages finished."
